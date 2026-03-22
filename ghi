@@ -21,6 +21,28 @@ ghr() {
 }
 
 # ----------------------------
+# Cache
+# ----------------------------
+
+CACHE_DIR="/tmp/ghi"
+mkdir -p "$CACHE_DIR"
+
+cache_file() {
+    if [ -n "$REPO" ]; then
+        echo "$CACHE_DIR/cache-${REPO//\//_}.json"
+    else
+        echo "$CACHE_DIR/cache-local.json"
+    fi
+}
+
+issue_cache() {
+    local CACHE
+    CACHE=$(cache_file)
+    echo "[INFO] Atualizando cache..."
+    ghr issue list --limit 200 --json number,title,body,labels,state > "$CACHE"
+}
+
+# ----------------------------
 # Utils
 # ----------------------------
 
@@ -35,12 +57,27 @@ cleanup_msg() {
 }
 
 # ----------------------------
-# List / View
+# List / Preview / View
 # ----------------------------
 
 issue_list() {
-    ghr issue list --json number,title |
-        jq -r '.[] | "\(.number) \(.title)"'
+    local CACHE
+    CACHE=$(cache_file)
+
+    if [ ! -f "$CACHE" ]; then
+        issue_cache
+    fi
+
+    jq -r '.[] | "\(.number) \(.title)"' "$CACHE"
+}
+
+issue_preview() {
+    local num="$1"
+    local CACHE
+    CACHE=$(cache_file)
+
+    jq -r ".[] | select(.number==$num) |
+    \"# \(.title)\n\nState: \(.state)\n\n\(.body)\n\nLabels: \(.labels[].name // \"\")\"" "$CACHE"
 }
 
 issue_view() {
@@ -97,7 +134,7 @@ EOF
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
-    "${EDITOR:-code}" "$TMP"
+    "${VISUAL:-${EDITOR:-hx}}" "$TMP"
 
     NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
@@ -139,6 +176,7 @@ EOF
     fi
 
     ghr issue edit "$issue" "${ARGS[@]}"
+    issue_cache
 
     SUCCESS=1
     echo "[OK] Issue atualizada"
@@ -179,7 +217,7 @@ EOF
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
-    "${EDITOR:-code}" "$TMP"
+    "${VISUAL:-${EDITOR:-hx}}" "$TMP"
 
     NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
@@ -215,6 +253,8 @@ EOF
         ghr issue create --title "$TITLE" --body "$BODY"
     fi
 
+    issue_cache
+
     SUCCESS=1
     echo "[OK] Issue criada"
 }
@@ -224,17 +264,20 @@ EOF
 # ----------------------------
 
 fzf_menu() {
+    issue_cache
+
     issue_list | \
         fzf \
-            --header "ENTER:view | CTRL-E:edit | CTRL-N:new | CTRL-O:web | CTRL-C:close | CTRL-R:reopen" \
-            --preview 'ghr issue view {1}' \
+            --header "ENTER:view | CTRL-Alt [E:edit | N:new | O:web | C:close | R:reopen | U:refresh]" \
+            --preview "$0 ${REPO:+-R $REPO} preview {1}" \
             --preview-window=right:50% \
             --bind "enter:execute($0 ${REPO:+-R $REPO} view {1})" \
-            --bind "ctrl-e:execute($0 ${REPO:+-R $REPO} edit {1})" \
-            --bind "ctrl-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-o:execute(ghr issue view {1} --web)" \
-            --bind "ctrl-c:execute(ghr issue close {1})+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-r:execute(ghr issue reopen {1})+reload($0 ${REPO:+-R $REPO} list)"
+            --bind "ctrl-alt-e:execute($0 ${REPO:+-R $REPO} edit {1})+reload($0 ${REPO:+-R $REPO} list)" \
+            --bind "ctrl-alt-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
+            --bind "ctrl-alt-c:execute(ghr issue close {1})+reload($0 ${REPO:+-R $REPO} list)" \
+            --bind "ctrl-alt-r:execute(ghr issue reopen {1})+reload($0 ${REPO:+-R $REPO} list)" \
+            --bind "ctrl-alt-o:execute(ghr issue view {1} --web)" \
+            --bind "ctrl-alt-u:execute($0 ${REPO:+-R $REPO} cache)+reload($0 ${REPO:+-R $REPO} list)"
 }
 
 # ----------------------------
@@ -246,6 +289,8 @@ case "${1:-menu}" in
     view) issue_view "$2" ;;
     edit) issue_edit "$2" ;;
     new)  issue_new ;;
+    preview) issue_preview "$2" ;;
+    cache) issue_cache ;;
     menu) fzf_menu ;;
     *) echo "Uso: ghi [-R owner/repo] [menu|list|view N|edit N|new]" ;;
 esac
