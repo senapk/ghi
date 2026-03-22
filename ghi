@@ -1,10 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# ----------------------------
-# Repo parameter (-R owner/repo)
-# ----------------------------
-
 REPO=""
 
 if [[ "${1:-}" == "-R" ]]; then
@@ -20,10 +16,6 @@ ghr() {
     fi
 }
 
-# ----------------------------
-# Cache
-# ----------------------------
-
 CACHE_DIR="/tmp/ghi"
 mkdir -p "$CACHE_DIR"
 
@@ -38,13 +30,29 @@ cache_file() {
 issue_cache() {
     local CACHE
     CACHE=$(cache_file)
-    echo "[INFO] Atualizando cache..."
+    echo "[INFO] Atualizando cache..." >&2
     ghr issue list --limit 200 --json number,title,body,labels,state > "$CACHE"
+    date +%s > "${CACHE}.time"
 }
 
-# ----------------------------
-# Utils
-# ----------------------------
+cache_valid() {
+    local CACHE
+    CACHE=$(cache_file)
+
+    if [ ! -f "$CACHE" ] || [ ! -f "${CACHE}.time" ]; then
+        return 1
+    fi
+
+    local NOW
+    NOW=$(date +%s)
+    local LAST
+    LAST=$(cat "${CACHE}.time")
+
+    local AGE=$((NOW - LAST))
+    [ "$AGE" -gt 300 ] && return 1
+
+    return 0
+}
 
 tmp_file() {
     echo "/tmp/gh-issue-$1-$(date +%s).md"
@@ -56,19 +64,18 @@ cleanup_msg() {
     echo "[RECOVER] Arquivo salvo em: $file"
 }
 
-# ----------------------------
-# List / Preview / View
-# ----------------------------
-
 issue_list() {
     local CACHE
     CACHE=$(cache_file)
 
-    if [ ! -f "$CACHE" ]; then
+    if ! cache_valid; then
         issue_cache
     fi
 
-    jq -r '.[] | "\(.number) \(.title)"' "$CACHE"
+    jq -r '
+    .[]
+    | "\(.number)\t\(.labels | map(.name) | join(","))\t\(.title)"
+    ' "$CACHE" | column -t -s $'\t'
 }
 
 issue_preview() {
@@ -77,26 +84,21 @@ issue_preview() {
     CACHE=$(cache_file)
 
     jq -r ".[] | select(.number==$num) |
-    \"# \(.title)\n\nState: \(.state)\n\n\(.body)\n\nLabels: \(.labels[].name // \"\")\"" "$CACHE"
+    \"# \(.title)\n\nState: \(.state)\n\n\(.body)\n\nLabels: \(.labels | map(.name) | join(\", \"))\"" "$CACHE"
 }
 
 issue_view() {
     ghr issue view "$1"
 }
 
-# ----------------------------
-# Edit
-# ----------------------------
-
 issue_edit() {
     local issue="$1"
-    local TMP
-    TMP=$(tmp_file "$issue")
+    TMP=$(tmp_file "$issue")   # TMP global para trap
 
     echo "[INFO] Temp file: $TMP"
 
     SUCCESS=0
-    trap '[ $SUCCESS -eq 0 ] && cleanup_msg "$TMP"' EXIT
+    trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
     DATA=$(ghr issue view "$issue" --json title,body,labels)
 
@@ -116,20 +118,14 @@ issue_edit() {
         fi
     done <<< "$ALL_LABELS"
 
-    LABEL_BLOCK="$ACTIVE$INACTIVE"
-
     cat > "$TMP" <<EOF
 # [TITLE] $TITLE
 
 ## Body
 $BODY
 
-## Labels (ativas primeiro, comente/descomente para alterar)
-$LABEL_BLOCK
-
----
-# Salve e feche para confirmar.
-# Saia sem salvar para cancelar.
+## Labels
+$ACTIVE$INACTIVE
 EOF
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
@@ -139,7 +135,7 @@ EOF
     NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
     if [ "$ORIGINAL_HASH" = "$NEW_HASH" ]; then
-        echo "[CANCEL] Nenhuma alteração — operação cancelada"
+        echo "[CANCEL] Nenhuma alteração"
         SUCCESS=1
         exit 0
     fi
@@ -148,7 +144,7 @@ EOF
 
     NEW_BODY=$(awk '
     /## Body/ {flag=1; next}
-    /## / {flag=0}
+    /## Labels/ {flag=0}
     flag
     ' "$TMP")
 
@@ -159,20 +155,26 @@ EOF
 
     [ -z "$NEW_TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
 
+    BODY_FILE="/tmp/ghi-body-$issue.txt"
+    printf "%s\n" "$NEW_BODY" > "$BODY_FILE"
+
+    TO_ADD=$(comm -13 <(echo "$CURRENT_LABELS" | sort) <(echo "$NEW_LABELS" | sort) || true)
+    TO_REMOVE=$(comm -23 <(echo "$CURRENT_LABELS" | sort) <(echo "$NEW_LABELS" | sort) || true)
+
     ARGS=()
     ARGS+=(--title "$NEW_TITLE")
-    ARGS+=(--body "$NEW_BODY")
+    ARGS+=(--body-file "$BODY_FILE")
 
-    if [ -n "$CURRENT_LABELS" ]; then
+    if [ -n "$TO_REMOVE" ]; then
         while IFS= read -r label; do
-            ARGS+=(--remove-label "$label")
-        done <<< "$CURRENT_LABELS"
+            [ -n "$label" ] && ARGS+=(--remove-label "$label")
+        done <<< "$TO_REMOVE"
     fi
 
-    if [ -n "$NEW_LABELS" ]; then
+    if [ -n "$TO_ADD" ]; then
         while IFS= read -r label; do
-            ARGS+=(--add-label "$label")
-        done <<< "$NEW_LABELS"
+            [ -n "$label" ] && ARGS+=(--add-label "$label")
+        done <<< "$TO_ADD"
     fi
 
     ghr issue edit "$issue" "${ARGS[@]}"
@@ -182,18 +184,13 @@ EOF
     echo "[OK] Issue atualizada"
 }
 
-# ----------------------------
-# New
-# ----------------------------
-
 issue_new() {
-    local TMP
     TMP="/tmp/gh-new-issue-$(date +%s).md"
 
     echo "[INFO] Temp file: $TMP"
 
     SUCCESS=0
-    trap '[ $SUCCESS -eq 0 ] && cleanup_msg "$TMP"' EXIT
+    trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
     LABEL_BLOCK=""
     if ghr repo view &>/dev/null; then
@@ -207,12 +204,8 @@ issue_new() {
 
 ## Body
 
-## Labels (descomente as que quiser usar)
+## Labels
 $LABEL_BLOCK
-
----
-# Salve e feche para criar.
-# Saia sem salvar para cancelar.
 EOF
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
@@ -222,7 +215,7 @@ EOF
     NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
     if [ "$ORIGINAL_HASH" = "$NEW_HASH" ]; then
-        echo "[CANCEL] Nenhuma alteração — operação cancelada"
+        echo "[CANCEL] Nenhuma alteração"
         SUCCESS=1
         exit 0
     fi
@@ -231,7 +224,7 @@ EOF
 
     BODY=$(awk '
     /## Body/ {flag=1; next}
-    /## / {flag=0}
+    /## Labels/ {flag=0}
     flag
     ' "$TMP")
 
@@ -242,15 +235,18 @@ EOF
 
     [ -z "$TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
 
+    BODY_FILE="/tmp/ghi-body-new.txt"
+    printf "%s\n" "$BODY" > "$BODY_FILE"
+
     if [ -n "$LABELS" ]; then
         ARGS=()
         while IFS= read -r label; do
             ARGS+=(--label "$label")
         done <<< "$LABELS"
 
-        ghr issue create --title "$TITLE" --body "$BODY" "${ARGS[@]}"
+        ghr issue create --title "$TITLE" --body-file "$BODY_FILE" "${ARGS[@]}"
     else
-        ghr issue create --title "$TITLE" --body "$BODY"
+        ghr issue create --title "$TITLE" --body-file "$BODY_FILE"
     fi
 
     issue_cache
@@ -259,30 +255,27 @@ EOF
     echo "[OK] Issue criada"
 }
 
-# ----------------------------
-# FZF Menu
-# ----------------------------
-
 fzf_menu() {
-    issue_cache
+    cache_valid || issue_cache
 
     issue_list | \
         fzf \
-            --header "ENTER:view | CTRL-Alt [E:edit | N:new | O:web | C:close | R:reopen | U:refresh]" \
+            --layout=reverse \
+            --border=rounded \
+            --cycle \
+            --header "ENTER:view | CTRL-Alt [E:dit | N:ew | W:eb | C:lose | R:eopen | U:update]" \
+            --info=inline \
+            --pointer="▶" \
             --preview "$0 ${REPO:+-R $REPO} preview {1}" \
-            --preview-window=right:50% \
-            --bind "enter:execute($0 ${REPO:+-R $REPO} view {1})" \
+            --preview-window=right:50%:wrap:border-left \
+            --bind "enter:become($0 ${REPO:+-R $REPO} view {1})" \
             --bind "ctrl-alt-e:execute($0 ${REPO:+-R $REPO} edit {1})+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-c:execute(ghr issue close {1})+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-r:execute(ghr issue reopen {1})+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-alt-o:execute(ghr issue view {1} --web)" \
+            --bind "ctrl-alt-w:execute(ghr issue view {1} --web)" \
             --bind "ctrl-alt-u:execute($0 ${REPO:+-R $REPO} cache)+reload($0 ${REPO:+-R $REPO} list)"
 }
-
-# ----------------------------
-# Dispatcher
-# ----------------------------
 
 case "${1:-menu}" in
     list) issue_list ;;
