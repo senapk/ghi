@@ -98,14 +98,15 @@ ghi -R cli/cli
 
 # Atalhos no menu (fzf)
 
-| Tecla  | Ação               |
-| ------ | ------------------ |
-| Enter  | Visualizar         |
-| Ctrl+E | Editar             |
-| Ctrl+N | Nova issue         |
-| Ctrl+O | Abrir no navegador |
-| Ctrl+C | Fechar issue       |
-| Ctrl+R | Reabrir issue      |
+| Tecla      | Ação               |
+| ---------- | ------------------ |
+| Enter      | Visualizar         |
+| Ctrl+Alt+E | Editar             |
+| Ctrl+Alt+N | Nova issue         |
+| Ctrl+Alt+O | Abrir no navegador |
+| Ctrl+Alt+C | Fechar issue       |
+| Ctrl+Alt+R | Reabrir issue      |
+| Ctrl+Alt+U | Atualizar lista    |
 
 ---
 
