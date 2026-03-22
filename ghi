@@ -1,0 +1,251 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# ----------------------------
+# Repo parameter (-R owner/repo)
+# ----------------------------
+
+REPO=""
+
+if [[ "${1:-}" == "-R" ]]; then
+    REPO="$2"
+    shift 2
+fi
+
+ghr() {
+    if [ -n "$REPO" ]; then
+        gh -R "$REPO" "$@"
+    else
+        gh "$@"
+    fi
+}
+
+# ----------------------------
+# Utils
+# ----------------------------
+
+tmp_file() {
+    echo "/tmp/gh-issue-$1-$(date +%s).md"
+}
+
+cleanup_msg() {
+    local file="$1"
+    echo
+    echo "[RECOVER] Arquivo salvo em: $file"
+}
+
+# ----------------------------
+# List / View
+# ----------------------------
+
+issue_list() {
+    ghr issue list --json number,title |
+        jq -r '.[] | "\(.number) \(.title)"'
+}
+
+issue_view() {
+    ghr issue view "$1"
+}
+
+# ----------------------------
+# Edit
+# ----------------------------
+
+issue_edit() {
+    local issue="$1"
+    local TMP
+    TMP=$(tmp_file "$issue")
+
+    echo "[INFO] Temp file: $TMP"
+
+    SUCCESS=0
+    trap '[ $SUCCESS -eq 0 ] && cleanup_msg "$TMP"' EXIT
+
+    DATA=$(ghr issue view "$issue" --json title,body,labels)
+
+    TITLE=$(echo "$DATA" | jq -r .title)
+    BODY=$(echo "$DATA" | jq -r .body)
+    CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
+    ALL_LABELS=$(ghr label list --json name -q '.[].name' || true)
+
+    ACTIVE=""
+    INACTIVE=""
+
+    while IFS= read -r label; do
+        if echo "$CURRENT_LABELS" | grep -Fxq "$label"; then
+            ACTIVE+="$label"$'\n'
+        else
+            INACTIVE+="# $label"$'\n'
+        fi
+    done <<< "$ALL_LABELS"
+
+    LABEL_BLOCK="$ACTIVE$INACTIVE"
+
+    cat > "$TMP" <<EOF
+# [TITLE] $TITLE
+
+## Body
+$BODY
+
+## Labels (ativas primeiro, comente/descomente para alterar)
+$LABEL_BLOCK
+
+---
+# Salve e feche para confirmar.
+# Saia sem salvar para cancelar.
+EOF
+
+    ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
+
+    "${EDITOR:-code}" "$TMP"
+
+    NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
+
+    if [ "$ORIGINAL_HASH" = "$NEW_HASH" ]; then
+        echo "[CANCEL] Nenhuma alteração — operação cancelada"
+        SUCCESS=1
+        exit 0
+    fi
+
+    NEW_TITLE=$(sed -n 's/^# \[TITLE\] //p' "$TMP")
+
+    NEW_BODY=$(awk '
+    /## Body/ {flag=1; next}
+    /## / {flag=0}
+    flag
+    ' "$TMP")
+
+    NEW_LABELS=$(awk '
+    /## Labels/ {flag=1; next}
+    flag && $0 !~ /^#/ && NF
+    ' "$TMP")
+
+    [ -z "$NEW_TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
+
+    ARGS=()
+    ARGS+=(--title "$NEW_TITLE")
+    ARGS+=(--body "$NEW_BODY")
+
+    if [ -n "$CURRENT_LABELS" ]; then
+        while IFS= read -r label; do
+            ARGS+=(--remove-label "$label")
+        done <<< "$CURRENT_LABELS"
+    fi
+
+    if [ -n "$NEW_LABELS" ]; then
+        while IFS= read -r label; do
+            ARGS+=(--add-label "$label")
+        done <<< "$NEW_LABELS"
+    fi
+
+    ghr issue edit "$issue" "${ARGS[@]}"
+
+    SUCCESS=1
+    echo "[OK] Issue atualizada"
+}
+
+# ----------------------------
+# New
+# ----------------------------
+
+issue_new() {
+    local TMP
+    TMP="/tmp/gh-new-issue-$(date +%s).md"
+
+    echo "[INFO] Temp file: $TMP"
+
+    SUCCESS=0
+    trap '[ $SUCCESS -eq 0 ] && cleanup_msg "$TMP"' EXIT
+
+    LABEL_BLOCK=""
+    if ghr repo view &>/dev/null; then
+        while IFS= read -r label; do
+            LABEL_BLOCK+="# $label"$'\n'
+        done < <(ghr label list --json name -q '.[].name')
+    fi
+
+    cat > "$TMP" <<EOF
+# [TITLE]
+
+## Body
+
+## Labels (descomente as que quiser usar)
+$LABEL_BLOCK
+
+---
+# Salve e feche para criar.
+# Saia sem salvar para cancelar.
+EOF
+
+    ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
+
+    "${EDITOR:-code}" "$TMP"
+
+    NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
+
+    if [ "$ORIGINAL_HASH" = "$NEW_HASH" ]; then
+        echo "[CANCEL] Nenhuma alteração — operação cancelada"
+        SUCCESS=1
+        exit 0
+    fi
+
+    TITLE=$(sed -n 's/^# \[TITLE\] //p' "$TMP")
+
+    BODY=$(awk '
+    /## Body/ {flag=1; next}
+    /## / {flag=0}
+    flag
+    ' "$TMP")
+
+    LABELS=$(awk '
+    /## Labels/ {flag=1; next}
+    flag && $0 !~ /^#/ && NF
+    ' "$TMP")
+
+    [ -z "$TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
+
+    if [ -n "$LABELS" ]; then
+        ARGS=()
+        while IFS= read -r label; do
+            ARGS+=(--label "$label")
+        done <<< "$LABELS"
+
+        ghr issue create --title "$TITLE" --body "$BODY" "${ARGS[@]}"
+    else
+        ghr issue create --title "$TITLE" --body "$BODY"
+    fi
+
+    SUCCESS=1
+    echo "[OK] Issue criada"
+}
+
+# ----------------------------
+# FZF Menu
+# ----------------------------
+
+fzf_menu() {
+    issue_list | \
+        fzf \
+            --header "ENTER:view | CTRL-E:edit | CTRL-N:new | CTRL-O:web | CTRL-C:close | CTRL-R:reopen" \
+            --preview 'ghr issue view {1}' \
+            --preview-window=right:50% \
+            --bind "enter:execute($0 ${REPO:+-R $REPO} view {1})" \
+            --bind "ctrl-e:execute($0 ${REPO:+-R $REPO} edit {1})" \
+            --bind "ctrl-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
+            --bind "ctrl-o:execute(ghr issue view {1} --web)" \
+            --bind "ctrl-c:execute(ghr issue close {1})+reload($0 ${REPO:+-R $REPO} list)" \
+            --bind "ctrl-r:execute(ghr issue reopen {1})+reload($0 ${REPO:+-R $REPO} list)"
+}
+
+# ----------------------------
+# Dispatcher
+# ----------------------------
+
+case "${1:-menu}" in
+    list) issue_list ;;
+    view) issue_view "$2" ;;
+    edit) issue_edit "$2" ;;
+    new)  issue_new ;;
+    menu) fzf_menu ;;
+    *) echo "Uso: ghi [-R owner/repo] [menu|list|view N|edit N|new]" ;;
+esac
