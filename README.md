@@ -61,11 +61,15 @@ mv ghi ~/.local/bin/ghi
 
 ## Usando no repositório atual
 
+Navegue até o repositório git que deseja gerenciar as issues e execute
+
 ```bash
 ghi
 ```
 
 ## Usando um repositório específico
+
+Você também pode usar o `ghi` de fora do diretório do repositório, especificando o repositório com `-R`:
 
 ```bash
 ghi -R owner/repo
