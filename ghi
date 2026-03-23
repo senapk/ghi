@@ -8,13 +8,6 @@ if [[ "${1:-}" == "-R" ]]; then
     shift 2
 fi
 
-ghr() {
-    if [ -n "$REPO" ]; then
-        gh -R "$REPO" "$@"
-    else
-        gh "$@"
-    fi
-}
 
 CACHE_DIR="/tmp/ghi"
 mkdir -p "$CACHE_DIR"
@@ -30,8 +23,24 @@ cache_file() {
 issue_cache() {
     local CACHE
     CACHE=$(cache_file)
+
     echo "[INFO] Atualizando cache..." >&2
-    ghr issue list --limit 200 --json number,title,body,labels,state > "$CACHE"
+
+    SINCE=$(date -d '7 days ago' +%Y-%m-%d)
+
+    {
+        gh ${REPO:+-R $REPO} issue list \
+            --state open \
+            --limit 200 \
+            --json number,title,body,labels,state,updatedAt,closedAt
+
+        gh ${REPO:+-R $REPO} issue list \
+            --state closed \
+            --search "closed:>=$SINCE" \
+            --limit 200 \
+            --json number,title,body,labels,state,updatedAt,closedAt
+    } | jq -s 'add | sort_by(.updatedAt) | reverse' > "$CACHE"
+
     date +%s > "${CACHE}.time"
 }
 
@@ -74,7 +83,7 @@ issue_list() {
 
     jq -r '
     .[]
-    | "\(.number)\t\(.labels | map(.name) | join(","))\t\(.title)"
+    | "\(.number)\t:\(.state)\t\(.labels | map(.name) | join(","))\t\(.title)"
     ' "$CACHE" | column -t -s $'\t'
 }
 
@@ -88,7 +97,7 @@ issue_preview() {
 }
 
 issue_view() {
-    ghr issue view "$1"
+    gh ${REPO:+-R $REPO} issue view "$1"
 }
 
 issue_edit() {
@@ -100,21 +109,20 @@ issue_edit() {
     SUCCESS=0
     trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
-    DATA=$(ghr issue view "$issue" --json title,body,labels)
+    DATA=$(gh ${REPO:+-R $REPO} issue view "$issue" --json title,body,labels)
 
     TITLE=$(echo "$DATA" | jq -r .title)
     BODY=$(echo "$DATA" | jq -r .body)
     CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
-    ALL_LABELS=$(ghr label list --json name -q '.[].name' || true)
+    ALL_LABELS=$(gh ${REPO:+-R $REPO} label list --json name -q '.[].name' || true)
 
-    ACTIVE=""
-    INACTIVE=""
+    LABEL_BLOCK=""
 
     while IFS= read -r label; do
         if echo "$CURRENT_LABELS" | grep -Fxq "$label"; then
-            ACTIVE+="$label"$'\n'
+            LABEL_BLOCK+="[x] $label"$'\n'
         else
-            INACTIVE+="# $label"$'\n'
+            LABEL_BLOCK+="[ ] $label"$'\n'
         fi
     done <<< "$ALL_LABELS"
 
@@ -125,7 +133,9 @@ issue_edit() {
 $BODY
 
 ## Labels
-$ACTIVE$INACTIVE
+$LABEL_BLOCK
+
+## End
 EOF
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
@@ -150,8 +160,9 @@ EOF
 
     NEW_LABELS=$(awk '
     /## Labels/ {flag=1; next}
-    flag && $0 !~ /^#/ && NF
-    ' "$TMP")
+    /## End/ {flag=0}
+    flag && /^\[x\]/
+    ' "$TMP" | sed 's/^\[x\] //')
 
     [ -z "$NEW_TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
 
@@ -177,7 +188,7 @@ EOF
         done <<< "$TO_ADD"
     fi
 
-    ghr issue edit "$issue" "${ARGS[@]}"
+    gh ${REPO:+-R $REPO} issue edit "$issue" "${ARGS[@]}"
     issue_cache
 
     SUCCESS=1
@@ -193,19 +204,21 @@ issue_new() {
     trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
     LABEL_BLOCK=""
-    if ghr repo view &>/dev/null; then
+    if gh ${REPO:+-R $REPO} repo view &>/dev/null; then
         while IFS= read -r label; do
-            LABEL_BLOCK+="# $label"$'\n'
-        done < <(ghr label list --json name -q '.[].name')
+            LABEL_BLOCK+="[ ] $label"$'\n'
+        done < <(gh ${REPO:+-R $REPO} label list --json name -q '.[].name')
     fi
 
     cat > "$TMP" <<EOF
-# [TITLE]
+# [TITLE] Digite o título da issue aqui
 
 ## Body
 
 ## Labels
 $LABEL_BLOCK
+
+## End
 EOF
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
@@ -230,8 +243,9 @@ EOF
 
     LABELS=$(awk '
     /## Labels/ {flag=1; next}
-    flag && $0 !~ /^#/ && NF
-    ' "$TMP")
+    /## End/ {flag=0}
+    flag && /^\[x\]/
+    ' "$TMP" | sed 's/^\[x\] //')
 
     [ -z "$TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
 
@@ -244,9 +258,9 @@ EOF
             ARGS+=(--label "$label")
         done <<< "$LABELS"
 
-        ghr issue create --title "$TITLE" --body-file "$BODY_FILE" "${ARGS[@]}"
+        gh ${REPO:+-R $REPO} issue create --title "$TITLE" --body-file "$BODY_FILE" "${ARGS[@]}"
     else
-        ghr issue create --title "$TITLE" --body-file "$BODY_FILE"
+        gh ${REPO:+-R $REPO} issue create --title "$TITLE" --body-file "$BODY_FILE"
     fi
 
     issue_cache
@@ -263,18 +277,21 @@ fzf_menu() {
             --layout=reverse \
             --border=rounded \
             --cycle \
-            --header "ENTER:view | CTRL-Alt [E:dit | N:ew | W:eb | C:lose | R:eopen | U:update]" \
+            --header "Enter:toggle painel, C-Alt[Edit|New|View|Web|Close|Open|Update]" \
             --info=inline \
             --pointer="▶" \
+            --exact \
+            --query=":open " \
             --preview "$0 ${REPO:+-R $REPO} preview {1}" \
             --preview-window=right:50%:wrap:border-left \
-            --bind "enter:become($0 ${REPO:+-R $REPO} view {1})" \
+            --bind "enter:toggle-preview" \
+            --bind "ctrl-alt-v:become($0 ${REPO:+-R $REPO} view {1})" \
             --bind "ctrl-alt-e:execute($0 ${REPO:+-R $REPO} edit {1})+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-alt-c:execute(ghr issue close {1})+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-alt-r:execute(ghr issue reopen {1})+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-alt-w:execute(ghr issue view {1} --web)" \
-            --bind "ctrl-alt-u:execute($0 ${REPO:+-R $REPO} cache)+reload($0 ${REPO:+-R $REPO} list)"
+            --bind "ctrl-alt-c:execute(gh ${REPO:+-R $REPO} issue close {1})+reload($0 ${REPO:+-R $REPO} list-refresh)" \
+            --bind "ctrl-alt-o:execute(gh ${REPO:+-R $REPO} issue reopen {1})+reload($0 ${REPO:+-R $REPO} list-refresh)" \
+            --bind "ctrl-alt-w:execute-silent(nohup gh ${REPO:+-R $REPO} issue view {1} --web >/dev/null 2>&1 &)" \
+            --bind "ctrl-alt-u:reload($0 ${REPO:+-R $REPO} list-refresh)"
 }
 
 case "${1:-menu}" in
@@ -285,5 +302,9 @@ case "${1:-menu}" in
     preview) issue_preview "$2" ;;
     cache) issue_cache ;;
     menu) fzf_menu ;;
+    list-refresh)
+        issue_cache
+        issue_list
+        ;;
     *) echo "Uso: ghi [-R owner/repo] [menu|list|view N|edit N|new]" ;;
 esac
