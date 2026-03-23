@@ -96,8 +96,37 @@ issue_preview() {
     \"# \(.title)\n\nState: \(.state)\n\n\(.body)\n\nLabels: \(.labels | map(.name) | join(\", \"))\"" "$CACHE"
 }
 
-issue_view() {
-    gh ${REPO:+-R $REPO} issue view "$1"
+issue_view_editor() {
+    local issue="$1"
+    local TMP
+    TMP=$(tmp_file "view-$issue")
+
+    echo "[INFO] Temp file: $TMP"
+
+    gh ${REPO:+-R $REPO} issue view "$issue" \
+        --json title,body,comments,author,state,labels \
+    | jq -r '
+"# \(.title)\n
+State: \(.state)
+Author: \(.author.login)
+Labels: \(.labels | map(.name) | join(", "))\n
+## Body
+\(.body)\n
+## Comments
+" +
+(
+  if (.comments | length) == 0 then
+    "No comments\n"
+  else
+    (.comments[] |
+      "----------------------------------------\nAuthor: \(.author.login)\n\(.body)\n")
+  end
+)
+' > "$TMP"
+
+    "${VISUAL:-${EDITOR:-hx}}" "$TMP" || true
+
+    rm -f "$TMP"
 }
 
 get_repo_labels() {
@@ -295,7 +324,7 @@ fzf_menu() {
             --preview "$0 ${REPO:+-R $REPO} preview {1}" \
             --preview-window=right:50%:wrap:border-left \
             --bind "enter:toggle-preview" \
-            --bind "ctrl-alt-v:become($0 ${REPO:+-R $REPO} view {1})" \
+            --bind "ctrl-alt-v:execute($0 ${REPO:+-R $REPO} view {1})"
             --bind "ctrl-alt-e:execute($0 ${REPO:+-R $REPO} edit {1})+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-c:execute(gh ${REPO:+-R $REPO} issue close {1})+reload($0 ${REPO:+-R $REPO} list-refresh)" \
@@ -306,7 +335,7 @@ fzf_menu() {
 
 case "${1:-menu}" in
     list) issue_list ;;
-    view) issue_view "$2" ;;
+    view) issue_view_editor "$2" ;;
     edit) issue_edit "$2" ;;
     new)  issue_new ;;
     preview) issue_preview "$2" ;;
