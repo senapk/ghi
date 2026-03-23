@@ -100,6 +100,32 @@ issue_view() {
     gh ${REPO:+-R $REPO} issue view "$1"
 }
 
+get_repo_labels() {
+    if [ -n "$REPO" ]; then
+        gh label list -R "$REPO" --json name -q '.[].name' 2>/dev/null || true
+    else
+        gh label list --json name -q '.[].name' 2>/dev/null || true
+    fi
+}
+
+build_label_block() {
+    local selected_labels="$1"
+    local all_labels
+    local block=""
+
+    all_labels=$(get_repo_labels | sort)
+
+    while IFS= read -r label; do
+        if echo "$selected_labels" | grep -Fxq "$label"; then
+            block+="[x] $label"$'\n'
+        else
+            block+="[ ] $label"$'\n'
+        fi
+    done <<< "$all_labels"
+
+    echo "$block"
+}
+
 issue_edit() {
     local issue="$1"
     TMP=$(tmp_file "$issue")   # TMP global para trap
@@ -114,17 +140,8 @@ issue_edit() {
     TITLE=$(echo "$DATA" | jq -r .title)
     BODY=$(echo "$DATA" | jq -r .body)
     CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
-    ALL_LABELS=$(gh ${REPO:+-R $REPO} label list --json name -q '.[].name' || true)
-
-    LABEL_BLOCK=""
-
-    while IFS= read -r label; do
-        if echo "$CURRENT_LABELS" | grep -Fxq "$label"; then
-            LABEL_BLOCK+="[x] $label"$'\n'
-        else
-            LABEL_BLOCK+="[ ] $label"$'\n'
-        fi
-    done <<< "$ALL_LABELS"
+    CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
+    LABEL_BLOCK=$(build_label_block "$CURRENT_LABELS")
 
     cat > "$TMP" <<EOF
 # [TITLE] $TITLE
@@ -203,15 +220,7 @@ issue_new() {
     SUCCESS=0
     trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
-    LABEL_BLOCK=""
-
-    if gh repo view "$REPO" &>/dev/null; then
-        ALL_LABELS=$(gh ${REPO:+-R $REPO} label list --json name -q '.[].name' || true)
-
-        while IFS= read -r label; do
-            [ -n "$label" ] && LABEL_BLOCK+="[ ] $label"$'\n'
-        done <<< "$ALL_LABELS"
-    fi
+    LABEL_BLOCK=$(build_label_block "")
 
     cat > "$TMP" <<EOF
 # [TITLE] Digite o título da issue aqui
