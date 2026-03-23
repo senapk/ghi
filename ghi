@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+DEFAULT_EDITOR="hx"
+EDITOR_CMD="${VISUAL:-${EDITOR:-$DEFAULT_EDITOR}}"
+
+BAT_CMD=$(command -v batcat || command -v bat || true)
+
 REPO=""
 
 if [[ "${1:-}" == "-R" ]]; then
@@ -120,7 +125,7 @@ Labels: \(.labels | map(.name) | join(\", \"))
 
 ## Body
 \(.body)
-\"" "$CACHE" | batcat \
+\"" "$CACHE" | $BAT_CMD \
         --language=markdown \
         --style=plain \
         --color=always \
@@ -156,7 +161,7 @@ Labels: \(.labels | map(.name) | join(", "))\n
 )
 ' > "$TMP"
 
-    "${VISUAL:-${EDITOR:-hx}}" "$TMP" || true
+    "$EDITOR_CMD" "$TMP" || true
 
     rm -f "$TMP"
 }
@@ -226,7 +231,7 @@ issue_edit() {
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
-    "${VISUAL:-${EDITOR:-hx}}" "$TMP"
+    "$EDITOR_CMD" "$TMP"
 
     NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
@@ -294,7 +299,7 @@ issue_new() {
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
-    "${VISUAL:-${EDITOR:-hx}}" "$TMP"
+    "$EDITOR_CMD" "$TMP"
 
     NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
