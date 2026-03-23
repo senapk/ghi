@@ -96,17 +96,38 @@ issue_preview() {
     local CACHE
     CACHE=$(cache_file)
 
-    jq -r ".[] | select(.number==$num) |
-    \"# Issue #\(.number) — \(.title)
+    # Dados básicos da issue vindos do cache
+    ISSUE_DATA=$(jq -r ".[] | select(.number==$num)" "$CACHE")
 
-State: \(.state)
-Labels: \(.labels | map(.name) | join(\", \"))
+    TITLE=$(echo "$ISSUE_DATA" | jq -r ".title")
+    STATE=$(echo "$ISSUE_DATA" | jq -r ".state")
+    LABELS=$(echo "$ISSUE_DATA" | jq -r ".labels | map(.name) | join(\", \")")
+    BODY=$(echo "$ISSUE_DATA" | jq -r ".body")
 
----
+    # Buscar comentários direto do GitHub
+    COMMENTS=$(gh ${REPO:+-R $REPO} issue view "$num" --json comments | jq -r '
+        if (.comments | length) == 0 then
+            "No comments"
+        else
+            (.comments[] |
+            "----------------------------------------\nAuthor: \(.author.login)\n\(.body)\n")
+        end
+    ')
 
-## Body
-\(.body)
-\"" "$CACHE" | $BAT_CMD \
+    {
+        echo "# Issue #$num — $TITLE"
+        echo
+        echo "State: $STATE"
+        echo "Labels: $LABELS"
+        echo
+        echo "---"
+        echo
+        echo "## Body"
+        echo "$BODY"
+        echo
+        echo "## Comments"
+        echo "$COMMENTS"
+    } | $BAT_CMD \
         --language=markdown \
         --style=plain \
         --color=always \
@@ -371,9 +392,11 @@ fzf_menu() {
             --border=rounded \
             --ansi \
             --cycle \
-            --bind "pgdn:preview-down" \
-            --bind "pgup:preview-up" \
-            --header "Enter:toggle painel, C-Alt[Edit|New|View|Web|Update], PageDown/PageUp(Scroll)" \
+            --bind "pgdn:preview-page-down" \
+            --bind "pgup:preview-page-up" \
+            --bind "shift-down:preview-down" \
+            --bind "shift-up:preview-up" \
+            --header "Enter:toggle painel, C-Alt[Edit|New|View|Web|Update], Scroll: Page(Up|Down)|Shift ↑↓" \
             --info=inline \
             --pointer="▶" \
             --exact \
