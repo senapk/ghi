@@ -204,10 +204,13 @@ issue_new() {
     trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
     LABEL_BLOCK=""
-    if gh ${REPO:+-R $REPO} repo view &>/dev/null; then
+
+    if gh repo view "$REPO" &>/dev/null; then
+        ALL_LABELS=$(gh ${REPO:+-R $REPO} label list --json name -q '.[].name' || true)
+
         while IFS= read -r label; do
-            LABEL_BLOCK+="[ ] $label"$'\n'
-        done < <(gh ${REPO:+-R $REPO} label list --json name -q '.[].name')
+            [ -n "$label" ] && LABEL_BLOCK+="[ ] $label"$'\n'
+        done <<< "$ALL_LABELS"
     fi
 
     cat > "$TMP" <<EOF
