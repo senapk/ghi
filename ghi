@@ -96,7 +96,6 @@ issue_preview() {
     local CACHE
     CACHE=$(cache_file)
 
-    # Dados básicos da issue vindos do cache
     ISSUE_DATA=$(jq -r ".[] | select(.number==$num)" "$CACHE")
 
     TITLE=$(echo "$ISSUE_DATA" | jq -r ".title")
@@ -104,7 +103,6 @@ issue_preview() {
     LABELS=$(echo "$ISSUE_DATA" | jq -r ".labels | map(.name) | join(\", \")")
     BODY=$(echo "$ISSUE_DATA" | jq -r ".body")
 
-    # Buscar comentários direto do GitHub
     COMMENTS=$(gh ${REPO:+-R $REPO} issue view "$num" --json comments | jq -r '
         if (.comments | length) == 0 then
             "No comments"
@@ -185,28 +183,22 @@ build_label_block() {
 
     while IFS= read -r label; do
         if echo "$selected_labels" | grep -Fxq "$label"; then
-            block+="[x] $label"$'\n'
+            block+="[x] $label, "
         else
-            block+="[ ] $label"$'\n'
+            block+="[ ] $label, "
         fi
     done <<< "$all_labels"
 
-    echo "$block"
+    echo "${block%, }"
 }
 
 build_state_block() {
     local current_state="$1"
-    local block=""
-
     if [ "$current_state" = "OPEN" ] || [ "$current_state" = "open" ]; then
-        block+="[x] open"$'
-'
+        echo "[x] open"
     else
-        block+="[ ] open"$'
-'
+        echo "[ ] open"
     fi
-
-    echo "$block"
 }
 
 create_draft_issue() {
@@ -218,14 +210,11 @@ create_draft_issue() {
     cat <<EOF
 # [TITLE] $title
 
-## State
-$state_block
+- State: $state_block
+- Labels: $labels
 
 ## Body
 $body
-
-## Labels
-$labels
 
 ## End
 EOF
@@ -265,24 +254,16 @@ issue_edit() {
     fi
 
     NEW_TITLE=$(sed -n 's/^# \[TITLE\] //p' "$TMP")
+    
+    NEW_STATE=$(grep "^- State:" "$TMP" | grep -o "\[[x ]\] open" | grep -q "\[x\]" && echo "open" || echo "closed")
+    
+    NEW_LABELS=$(grep "^- Labels:" "$TMP" | sed 's/^- Labels: //' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep '^\[x\]' | sed 's/^\[x\] //')
 
     NEW_BODY=$(awk '
     /## Body/ {flag=1; next}
-    /## Labels/ {flag=0}
+    /## End/ {flag=0}
     flag
     ' "$TMP")
-
-    NEW_LABELS=$(awk '
-    /## Labels/ {flag=1; next}
-    /## End/ {flag=0}
-    flag && /^\[x\]/
-    ' "$TMP" | sed 's/^\[x\] //')
-
-    NEW_STATE=$(awk '
-    /## State/ {flag=1; next}
-    /## Body/ {flag=0}
-    flag && /^\[x\]/
-    ' "$TMP" | sed 's/^\[x\] //')
 
     [ -z "$NEW_TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
 
@@ -317,7 +298,6 @@ issue_edit() {
     fi
 
     issue_cache
-
     SUCCESS=1
     echo "[OK] Issue atualizada"
 }
@@ -336,9 +316,7 @@ issue_new() {
     create_draft_issue "Digite o título da issue aqui" "" "$LABEL_BLOCK" "$STATE_BLOCK" > "$TMP"
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
-
     "$EDITOR_CMD" "$TMP"
-
     NEW_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
     if [ "$ORIGINAL_HASH" = "$NEW_HASH" ]; then
@@ -348,18 +326,14 @@ issue_new() {
     fi
 
     TITLE=$(sed -n 's/^# \[TITLE\] //p' "$TMP")
+    
+    LABELS=$(grep "^- Labels:" "$TMP" | sed 's/^- Labels: //' | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | grep '^\[x\]' | sed 's/^\[x\] //')
 
     BODY=$(awk '
     /## Body/ {flag=1; next}
-    /## Labels/ {flag=0}
+    /## End/ {flag=0}
     flag
     ' "$TMP")
-
-    LABELS=$(awk '
-    /## Labels/ {flag=1; next}
-    /## End/ {flag=0}
-    flag && /^\[x\]/
-    ' "$TMP" | sed 's/^\[x\] //')
 
     [ -z "$TITLE" ] && { echo "[ERROR] Título vazio"; exit 1; }
 
@@ -371,20 +345,18 @@ issue_new() {
         while IFS= read -r label; do
             ARGS+=(--label "$label")
         done <<< "$LABELS"
-
         gh ${REPO:+-R $REPO} issue create --title "$TITLE" --body-file "$BODY_FILE" "${ARGS[@]}"
     else
         gh ${REPO:+-R $REPO} issue create --title "$TITLE" --body-file "$BODY_FILE"
     fi
 
     issue_cache
-
     SUCCESS=1
     echo "[OK] Issue criada"
 }
 
 YW='\033[0;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 HEADER="$(printf  "Edit: ${YW}C-Alt${NC}[${YW}E${NC}dit|${YW}N${NC}ew|${YW}V${NC}iew|${YW}W${NC}eb|${YW}U${NC}pdate], Preview:${YW}↵${NC} , Scroll: ${YW}Pg[Up|Down]${NC} | ${YW}Shift ↑↓${NC}")"
 fzf_menu() {
     cache_valid || issue_cache
