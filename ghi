@@ -383,6 +383,9 @@ issue_new() {
     echo "[OK] Issue criada"
 }
 
+YW='\033[0;33m'
+NC='\033[0m' # No Color
+HEADER="$(printf  "Edit: ${YW}C-Alt${NC}[${YW}E${NC}dit|${YW}N${NC}ew|${YW}V${NC}iew|${YW}W${NC}eb|${YW}U${NC}pdate], Preview:${YW}↵${NC} , Scroll: ${YW}Pg[Up|Down]${NC} | ${YW}Shift ↑↓${NC}")"
 fzf_menu() {
     cache_valid || issue_cache
 
@@ -396,7 +399,7 @@ fzf_menu() {
             --bind "pgup:preview-page-up" \
             --bind "shift-down:preview-down" \
             --bind "shift-up:preview-up" \
-            --header "Enter:toggle painel, C-Alt[Edit|New|View|Web|Update], Scroll: Page(Up|Down)|Shift ↑↓" \
+            --header "$HEADER" \
             --info=inline \
             --pointer="▶" \
             --exact \
