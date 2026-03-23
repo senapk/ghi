@@ -13,7 +13,6 @@ if [[ "${1:-}" == "-R" ]]; then
     shift 2
 fi
 
-
 CACHE_DIR="/tmp/ghi"
 mkdir -p "$CACHE_DIR"
 
@@ -91,24 +90,6 @@ issue_list() {
     | "\(.number)\t:\(.state)\t\(.labels | map(.name) | join(","))\t\(.title)"
     ' "$CACHE" | column -t -s $'\t'
 }
-
-# issue_preview() {
-#     local num="$1"
-#     local CACHE
-#     CACHE=$(cache_file)
-
-#     jq -r ".[] | select(.number==$num) |
-#     \"# Issue #\(.number) — \(.title)
-
-# **State:** \(.state)  
-# **Labels:** \(.labels | map(.name) | join(\", \"))
-
-# ---
-
-# ## Body
-# \(.body)
-# \"" "$CACHE" | CLICOLOR_FORCE=1 glow --style=dark --width ${FZF_PREVIEW_COLUMNS:-80}
-# }
 
 issue_preview() {
     local num="$1"
@@ -192,13 +173,32 @@ build_label_block() {
     echo "$block"
 }
 
+build_state_block() {
+    local current_state="$1"
+    local block=""
+
+    if [ "$current_state" = "OPEN" ] || [ "$current_state" = "open" ]; then
+        block+="[x] open"$'
+'
+    else
+        block+="[ ] open"$'
+'
+    fi
+
+    echo "$block"
+}
+
 create_draft_issue() {
     local title="$1"
     local body="$2"
     local labels="$3"
+    local state_block="$4"
 
     cat <<EOF
 # [TITLE] $title
+
+## State
+$state_block
 
 ## Body
 $body
@@ -212,22 +212,24 @@ EOF
 
 issue_edit() {
     local issue="$1"
-    TMP=$(tmp_file "$issue")   # TMP global para trap
+    TMP=$(tmp_file "$issue")
 
     echo "[INFO] Temp file: $TMP"
 
     SUCCESS=0
     trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
-    DATA=$(gh ${REPO:+-R $REPO} issue view "$issue" --json title,body,labels)
+    DATA=$(gh ${REPO:+-R $REPO} issue view "$issue" --json title,body,labels,state)
 
     TITLE=$(echo "$DATA" | jq -r .title)
     BODY=$(echo "$DATA" | jq -r .body)
-    CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
+    STATE=$(echo "$DATA" | jq -r .state)
     CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
 
     LABEL_BLOCK=$(build_label_block "$CURRENT_LABELS")
-    create_draft_issue "$TITLE" "$BODY" "$LABEL_BLOCK" > "$TMP"
+    STATE_BLOCK=$(build_state_block "$STATE")
+
+    create_draft_issue "$TITLE" "$BODY" "$LABEL_BLOCK" "$STATE_BLOCK" > "$TMP"
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
@@ -252,6 +254,12 @@ issue_edit() {
     NEW_LABELS=$(awk '
     /## Labels/ {flag=1; next}
     /## End/ {flag=0}
+    flag && /^\[x\]/
+    ' "$TMP" | sed 's/^\[x\] //')
+
+    NEW_STATE=$(awk '
+    /## State/ {flag=1; next}
+    /## Body/ {flag=0}
     flag && /^\[x\]/
     ' "$TMP" | sed 's/^\[x\] //')
 
@@ -280,6 +288,13 @@ issue_edit() {
     fi
 
     gh ${REPO:+-R $REPO} issue edit "$issue" "${ARGS[@]}"
+
+    if [ "$NEW_STATE" = "open" ]; then
+        gh ${REPO:+-R $REPO} issue reopen "$issue" >/dev/null 2>&1 || true
+    else
+        gh ${REPO:+-R $REPO} issue close "$issue" >/dev/null 2>&1 || true
+    fi
+
     issue_cache
 
     SUCCESS=1
@@ -295,7 +310,9 @@ issue_new() {
     trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
     LABEL_BLOCK=$(build_label_block "")
-    create_draft_issue "Digite o título da issue aqui" "" "$LABEL_BLOCK" > "$TMP"
+    STATE_BLOCK=$(build_state_block "open")
+
+    create_draft_issue "Digite o título da issue aqui" "" "$LABEL_BLOCK" "$STATE_BLOCK" > "$TMP"
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
@@ -354,7 +371,9 @@ fzf_menu() {
             --border=rounded \
             --ansi \
             --cycle \
-            --header "Enter:toggle painel, C-Alt[Edit|New|View|Web|Close|Open|Update]" \
+            --bind "pgdn:preview-down" \
+            --bind "pgup:preview-up" \
+            --header "Enter:toggle painel, C-Alt[Edit|New|View|Web|Update], PageDown/PageUp(Scroll)" \
             --info=inline \
             --pointer="▶" \
             --exact \
@@ -363,10 +382,8 @@ fzf_menu() {
             --preview-window=right:50%:wrap:border-left \
             --bind "enter:toggle-preview" \
             --bind "ctrl-alt-v:execute($0 ${REPO:+-R $REPO} view {1})" \
-            --bind "ctrl-alt-e:execute($0 ${REPO:+-R $REPO} edit {1})+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-alt-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
-            --bind "ctrl-alt-c:execute(gh ${REPO:+-R $REPO} issue close {1})+reload($0 ${REPO:+-R $REPO} list-refresh)" \
-            --bind "ctrl-alt-o:execute(gh ${REPO:+-R $REPO} issue reopen {1})+reload($0 ${REPO:+-R $REPO} list-refresh)" \
+            --bind "ctrl-alt-e:execute($0 ${REPO:+-R $REPO} edit {1})+reload($0 ${REPO:+-R $REPO} list-refresh)" \
+            --bind "ctrl-alt-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list-refresh)" \
             --bind "ctrl-alt-w:execute-silent(nohup gh ${REPO:+-R $REPO} issue view {1} --web >/dev/null 2>&1 &)" \
             --bind "ctrl-alt-u:reload($0 ${REPO:+-R $REPO} list-refresh)"
 }
