@@ -87,13 +87,45 @@ issue_list() {
     ' "$CACHE" | column -t -s $'\t'
 }
 
+# issue_preview() {
+#     local num="$1"
+#     local CACHE
+#     CACHE=$(cache_file)
+
+#     jq -r ".[] | select(.number==$num) |
+#     \"# Issue #\(.number) — \(.title)
+
+# **State:** \(.state)  
+# **Labels:** \(.labels | map(.name) | join(\", \"))
+
+# ---
+
+# ## Body
+# \(.body)
+# \"" "$CACHE" | CLICOLOR_FORCE=1 glow --style=dark --width ${FZF_PREVIEW_COLUMNS:-80}
+# }
+
 issue_preview() {
     local num="$1"
     local CACHE
     CACHE=$(cache_file)
 
     jq -r ".[] | select(.number==$num) |
-    \"# \(.title)\n\nState: \(.state)\n\n\(.body)\n\nLabels: \(.labels | map(.name) | join(\", \"))\"" "$CACHE"
+    \"# Issue #\(.number) — \(.title)
+
+State: \(.state)
+Labels: \(.labels | map(.name) | join(\", \"))
+
+---
+
+## Body
+\(.body)
+\"" "$CACHE" | batcat \
+        --language=markdown \
+        --style=plain \
+        --color=always \
+        --paging=never \
+        --terminal-width="${FZF_PREVIEW_COLUMNS:-80}"
 }
 
 issue_view_editor() {
@@ -315,6 +347,7 @@ fzf_menu() {
         fzf \
             --layout=reverse \
             --border=rounded \
+            --ansi \
             --cycle \
             --header "Enter:toggle painel, C-Alt[Edit|New|View|Web|Close|Open|Update]" \
             --info=inline \
@@ -324,7 +357,7 @@ fzf_menu() {
             --preview "$0 ${REPO:+-R $REPO} preview {1}" \
             --preview-window=right:50%:wrap:border-left \
             --bind "enter:toggle-preview" \
-            --bind "ctrl-alt-v:execute($0 ${REPO:+-R $REPO} view {1})"
+            --bind "ctrl-alt-v:execute($0 ${REPO:+-R $REPO} view {1})" \
             --bind "ctrl-alt-e:execute($0 ${REPO:+-R $REPO} edit {1})+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-n:execute($0 ${REPO:+-R $REPO} new)+reload($0 ${REPO:+-R $REPO} list)" \
             --bind "ctrl-alt-c:execute(gh ${REPO:+-R $REPO} issue close {1})+reload($0 ${REPO:+-R $REPO} list-refresh)" \
