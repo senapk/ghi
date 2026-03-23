@@ -126,6 +126,24 @@ build_label_block() {
     echo "$block"
 }
 
+create_draft_issue() {
+    local title="$1"
+    local body="$2"
+    local labels="$3"
+
+    cat <<EOF
+# [TITLE] $title
+
+## Body
+$body
+
+## Labels
+$labels
+
+## End
+EOF
+}
+
 issue_edit() {
     local issue="$1"
     TMP=$(tmp_file "$issue")   # TMP global para trap
@@ -141,19 +159,9 @@ issue_edit() {
     BODY=$(echo "$DATA" | jq -r .body)
     CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
     CURRENT_LABELS=$(echo "$DATA" | jq -r '.labels[].name')
+
     LABEL_BLOCK=$(build_label_block "$CURRENT_LABELS")
-
-    cat > "$TMP" <<EOF
-# [TITLE] $TITLE
-
-## Body
-$BODY
-
-## Labels
-$LABEL_BLOCK
-
-## End
-EOF
+    create_draft_issue "$TITLE" "$BODY" "$LABEL_BLOCK" > "$TMP"
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
@@ -221,17 +229,7 @@ issue_new() {
     trap 'if [ "${SUCCESS:-0}" -eq 0 ]; then cleanup_msg "$TMP"; fi' EXIT
 
     LABEL_BLOCK=$(build_label_block "")
-
-    cat > "$TMP" <<EOF
-# [TITLE] Digite o título da issue aqui
-
-## Body
-
-## Labels
-$LABEL_BLOCK
-
-## End
-EOF
+    create_draft_issue "Digite o título da issue aqui" "" "$LABEL_BLOCK" > "$TMP"
 
     ORIGINAL_HASH=$(sha1sum "$TMP" | awk '{print $1}')
 
